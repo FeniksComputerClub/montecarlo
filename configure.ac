@@ -18,16 +18,11 @@ define(CW_BUGREPORT, [])
 # CW_INTERFACE_VERSION_REVISION  : Revision, increment every public release; or set to 0 when the interface is changed.
 # CW_INTERFACE_AGE               : Increment if interfaces have been added; or set to 0 when interfaces have been removed.
 
-### Uncomment this if the project is a library.
-#define(CW_INTERFACE_VERSION, 0)
-#define(CW_INTERFACE_VERSION_REVISION, 0)
-#define(CW_INTERFACE_AGE, 0)
-
 # CW_COMPILE_FLAGS may contain warning flags, but also default debug flags (-g*)
 # and optimization flags (-O*) that which will be stripped when not required.
-define(CW_COMPILE_FLAGS, [-W -Wall -Woverloaded-virtual -Wundef -Wpointer-arith -Wwrite-strings -Winline])
+define(CW_COMPILE_FLAGS, [-fmax-errors=2 -W -Wall -Woverloaded-virtual -Wundef -Wpointer-arith -Wwrite-strings -Winline])
 # CW_THREADS can be [no] (single-threaded), [yes] (multi-threaded) or [both] (single and multi-threaded applications).
-define(CW_THREADS, [both])
+define(CW_THREADS, [yes])
 
 # Include cwm4 header.
 m4_include([cwm4/configure_ac_top.m4])
@@ -37,7 +32,7 @@ m4_include([cwm4/configure_ac_top.m4])
 #CW_DOXYGEN
 
 ### Uncomment this to add more configuration output files.
-#AC_CONFIG_FILES([src/Makefile] [montecarlo.pc])
+AC_CONFIG_FILES([src/Makefile])
 
 # Include cwm4 footer.
 m4_include([cwm4/configure_ac_bottom.m4])
