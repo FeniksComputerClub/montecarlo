@@ -8,10 +8,12 @@
 #include <atomic>
 #include <random>
 
+std::mt19937::result_type seed = 0xfe41c5;
+
 class MonteCarlo : public AIStatefulTask {
   private:
     int m_index;
-    std::random_device m_rd;
+    std::mt19937 m_rand;
 
   protected:
     typedef AIStatefulTask direct_base_type;    // The base class of this task.
@@ -24,12 +26,14 @@ class MonteCarlo : public AIStatefulTask {
 
   public:
     static state_type const max_state = MonteCarlo_beta + 1;
-    MonteCarlo() : AIStatefulTask(true), m_index(0) { }
+    MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed) { }
 
     void set_number(int n) { m_index = n; }
 
-  protected: // The destructor must be protected.
+  protected:
+    // The destructor must be protected.
     ~MonteCarlo() { }
+
     void initialize_impl();
     void multiplex_impl(state_type run_state);
     void abort_impl();
@@ -70,30 +74,37 @@ void MonteCarlo::multiplex_impl(state_type run_state)
   {
     case MonteCarlo_alpha:
     {
-      std::mt19937 gen(m_rd());
-      std::uniform_int_distribution<> dis(1, 7);
-      int randomnumber = dis(gen);
-      std::cout << randomnumber << std::endl;
+      int randomnumber = std::uniform_int_distribution<>{1, 6}(m_rand);
+      Dout(dc::notice, "randomnumber = " << randomnumber);
+      bool state_changed = false;
       switch(randomnumber)
       {
         case 1:
-          set_state(MonteCarlo_alpha);
-          break;
         case 2:
-          set_state(MonteCarlo_beta);
-          break;
+          break;        // See below the switch.
         case 3:
-          advance_state(MonteCarlo_alpha);
+          set_state(MonteCarlo_alpha);
+          state_changed = false;
           break;
         case 4:
-          advance_state(MonteCarlo_beta);
+          set_state(MonteCarlo_beta);
+          state_changed = true;
           break;
         case 5:
-          cont();
+          advance_state(MonteCarlo_alpha);
           break;
         case 6:
-        case 7:
+          advance_state(MonteCarlo_beta);
+          state_changed = true;
+          break;
+      }
+      // We MUST call idle() or yield() if the state didn't change.
+      if (!state_changed || randomnumber <= 2)
+      {
+        if (randomnumber == 1)
           idle();
+        else
+          yield();
       }
       break;
     }
@@ -118,11 +129,16 @@ int main()
   Dout(dc::statefultask|flush_cf, "Calling montecarlo->run()");
   montecarlo->run();
 
-  while (montecarlo->running())
+  for (int n = 0; n < 100 && montecarlo->running(); ++n)
   {
+    std::cout << std::flush;
     //Dout(dc::statefultask|flush_cf, "Calling gMainThreadEngine.mainloop()");
     gMainThreadEngine.mainloop();
     //Dout(dc::statefultask|flush_cf, "Returned from gMainThreadEngine.mainloop()");
     std::this_thread::sleep_for(std::chrono::microseconds(1));
+  }
+  if (montecarlo->running())
+  {
+    Dout(dc::notice, "Apparently the MonteCarlo task went permanently idle.");
   }
 }
