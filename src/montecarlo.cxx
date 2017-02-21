@@ -125,20 +125,25 @@ int main()
 
   AIAuxiliaryThread::start();
 
+  std::mt19937 rand(seed);
+
   boost::intrusive_ptr<MonteCarlo> montecarlo = new MonteCarlo;
   Dout(dc::statefultask|flush_cf, "Calling montecarlo->run()");
   montecarlo->run();
 
-  for (int n = 0; n < 100 && montecarlo->running(); ++n)
+  int count = 0;
+  int loop_size;
+  while (montecarlo->running())
   {
-    std::cout << std::flush;
-    //Dout(dc::statefultask|flush_cf, "Calling gMainThreadEngine.mainloop()");
+    if (count == 0)
+      loop_size = std::uniform_int_distribution<>{2, 100}(rand);
     gMainThreadEngine.mainloop();
-    //Dout(dc::statefultask|flush_cf, "Returned from gMainThreadEngine.mainloop()");
-    std::this_thread::sleep_for(std::chrono::microseconds(1));
-  }
-  if (montecarlo->running())
-  {
-    Dout(dc::notice, "Apparently the MonteCarlo task went permanently idle.");
+    std::cout << std::flush;
+    if (++count == loop_size)
+    {
+      Dout(dc::notice, "Looped " << count << " times, calling cont().");
+      count = 0;
+      montecarlo->cont();
+    }
   }
 }
