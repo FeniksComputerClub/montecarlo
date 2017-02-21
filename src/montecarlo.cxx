@@ -140,7 +140,7 @@ int main()
       loop_size = std::uniform_int_distribution<>{2, 100}(rand);
     gMainThreadEngine.mainloop();
     std::cout << std::flush;
-    if (++count == loop_size)
+    if (++count >= loop_size && montecarlo->active(0))
     {
       Dout(dc::notice, "Looped " << count << " times, calling cont().");
       count = 0;
