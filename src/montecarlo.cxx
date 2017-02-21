@@ -123,6 +123,7 @@ int main()
 
   static_assert(!std::is_destructible<MonteCarlo>::value && std::has_virtual_destructor<MonteCarlo>::value, "Class must have a protected virtual destuctor.");
 
+  // AIAuxiliaryThread must be manually started/stopped.
   AIAuxiliaryThread::start();
 
   std::mt19937 rand(seed);
@@ -146,4 +147,7 @@ int main()
       montecarlo->cont();
     }
   }
+
+  // Wait till AIAuxiliaryThread finished.
+  AIAuxiliaryThread::stop();
 }
