@@ -26,7 +26,7 @@ class MonteCarlo : public AIStatefulTask {
 
   public:
     static state_type const max_state = MonteCarlo_beta + 1;
-    MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed) { }
+    MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed) { _MonteCarloProbe("After construction", task_state()); }
 
     void set_number(int n) { m_index = n; }
 
@@ -45,12 +45,12 @@ char const* MonteCarlo::state_str_impl(state_type run_state) const
 {
   switch(run_state)
   {
+    case -1: return "<not set>";
     // A complete listing of montecarlo_state_type.
     AI_CASE_RETURN(MonteCarlo_alpha);
     AI_CASE_RETURN(MonteCarlo_beta);
   }
-  ASSERT(false);
-  return "UNKNOWN STATE";
+  return "UNKNOWN";
 };
 
 void MonteCarlo::initialize_impl()
@@ -104,7 +104,7 @@ void MonteCarlo::multiplex_impl(state_type run_state)
         if (randomnumber == 1)
           idle();
         else
-          yield();
+          yield(&gMainThreadEngine);
       }
       break;
     }
