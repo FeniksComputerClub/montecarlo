@@ -6,8 +6,10 @@
 #include "utils/GlobalObjectManager.h"
 #include "threadsafe/aithreadid.h"
 #include "debug.h"
+#include <boost/filesystem.hpp>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <random>
@@ -20,13 +22,12 @@ channel_ct montecarlo("MONTECARLO");
 NAMESPACE_DEBUG_CHANNELS_END
 #endif
 
-#define MonteCarloProbe(...) MonteCarloProbeFileState(montecarlo::montecarlo_cxx, copy_state(), __VA_ARGS__)
+#define MonteCarloProbe(...) MonteCarloProbeFileState(copy_state(), __VA_ARGS__)
 
 namespace montecarlo {
 
-int const montecarlo_cxx = 20000;
-
 struct FullState {
+  std::string filename;
   int line;
   char const* description;
   AIStatefulTask::task_state_st task_state;
@@ -37,9 +38,9 @@ struct FullState {
   int s3;
   char const* s3_str;
 
-  FullState(int _line, char const* _description, AIStatefulTask::task_state_st const& _task_state,
+  FullState(std::string const& _filename, int _line, char const* _description, AIStatefulTask::task_state_st const& _task_state,
       int _s1, char const* _s1_str, int _s2, char const* _s2_str, int _s3, char const* _s3_str) :
-    line(_line), description(_description), task_state(_task_state),
+    filename(_filename), line(_line), description(_description), task_state(_task_state),
     s1(_s1), s1_str(_s1_str), s2(_s2), s2_str(_s2_str), s3(_s3), s3_str(_s3_str) { }
 
   bool collapses(FullState const& fs) const { return task_state.equivalent(fs.task_state); }
@@ -51,7 +52,7 @@ struct FullState {
 
 std::ostream& operator<<(std::ostream& os, FullState const& full_state)
 {
-  os << "{ '" << full_state.description << "' (" << std::dec << full_state.line << ")";
+  os << "{ '" << full_state.description << "' (" << full_state.filename << ':' << std::dec << full_state.line << ")";
   full_state.print_s123(os);
   os << ", ";
   full_state.print_base_and_avdance_state(os);
@@ -86,6 +87,9 @@ void FullState::print_task_state(std::ostream& os) const
 
 bool operator<(FullState const& fs1,  FullState const& fs2)
 {
+  int res = fs1.filename.compare(fs2.filename);
+  if (res != 0)
+    return res < 0;
   if (fs1.line != fs2.line)
     return fs1.line < fs2.line;
   if (fs1.s1 !=  fs2.s1)
@@ -206,7 +210,7 @@ void write_transitions_gv()
       continue;
     ofile << "  " << node << "[";
     // Print node label.
-    ofile << "label=\"" << node->me->first.description << " (#" << node->me->first.line << ")\n";
+    ofile << "label=\"" << node->me->first.description << " (" << node->me->first.filename << ':' << node->me->first.line << ")\n";
     montecarlo::FullState const& fs(node->me->first);
     fs.print_s123(ofile);
     ofile << "\n";
@@ -233,6 +237,7 @@ void write_transitions_gv()
 }
 
 } // namespace montecarlo
+
 std::mt19937::result_type seed = 0xfe41c5;
 
 class MonteCarlo : public AIStatefulTask {
@@ -264,7 +269,7 @@ class MonteCarlo : public AIStatefulTask {
     void abort_impl();
     void finish_impl();
     char const* state_str_impl(state_type run_state) const;
-    void probe_impl(int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str);
+    void probe_impl(char const* file, int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str);
 };
 
 char const* MonteCarlo::state_str_impl(state_type run_state) const
@@ -339,14 +344,15 @@ void MonteCarlo::multiplex_impl(state_type run_state)
   }
 }
 
-void MonteCarlo::probe_impl(int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str)
+void MonteCarlo::probe_impl(char const* file, int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str)
 {
   static std::thread::id s_id;
   ASSERT(aithreadid::is_single_threaded(s_id));  // Fails if more than one thread executes this line.
 
   using namespace montecarlo;
 
-  FullState full_state(file_line, description, state, s1, s1_str, s2, s2_str, s3, s3_str);
+  boost::filesystem::path path(file);
+  FullState full_state(path.filename().string(), file_line, description, state, s1, s1_str, s2, s2_str, s3, s3_str);
 
   // Insert the new state into the std::set.
   auto it = states.find(full_state);
