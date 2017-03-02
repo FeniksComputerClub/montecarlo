@@ -19,6 +19,7 @@
 #ifdef CWDEBUG
 NAMESPACE_DEBUG_CHANNELS_START
 channel_ct montecarlo("MONTECARLO");
+channel_ct mcstate("MCSTATE");
 NAMESPACE_DEBUG_CHANNELS_END
 #endif
 
@@ -43,10 +44,16 @@ struct FullState {
     filename(_filename), line(_line), description(_description), task_state(_task_state),
     s1(_s1), s1_str(_s1_str), s2(_s2), s2_str(_s2_str), s3(_s3), s3_str(_s3_str) { }
 
-  bool collapses(FullState const& fs) const { return task_state.equivalent(fs.task_state); }
+  bool collapses(FullState const& fs) const
+  {
+    // If the output node starts with 'Before ' or 'Calling ' then don't collapse it.
+    if (strncmp(fs.description, "Before ", 7) == 0 || strncmp(fs.description, "Calling ", 8) == 0)
+      return false;
+    return task_state.equivalent(fs.task_state);
+  }
 
   void print_s123(std::ostream& os) const;
-  void print_base_and_avdance_state(std::ostream& os) const;
+  void print_base_and_advance_state(std::ostream& os) const;
   void print_task_state(std::ostream& os) const;
 };
 
@@ -55,7 +62,7 @@ std::ostream& operator<<(std::ostream& os, FullState const& full_state)
   os << "{ '" << full_state.description << "' (" << full_state.filename << ':' << std::dec << full_state.line << ")";
   full_state.print_s123(os);
   os << ", ";
-  full_state.print_base_and_avdance_state(os);
+  full_state.print_base_and_advance_state(os);
   os << ", ";
   full_state.print_task_state(os);
   return os << '}';
@@ -68,7 +75,7 @@ void FullState::print_s123(std::ostream& os) const
   if (s3 != -1) os << '/' << s3_str;
 }
 
-void FullState::print_base_and_avdance_state(std::ostream& os) const
+void FullState::print_base_and_advance_state(std::ostream& os) const
 {
   os << task_state.base_state_str << '/' << task_state.run_state_str;
   if (task_state.advance_state) os << '/' << task_state.advance_state_str;
@@ -135,28 +142,23 @@ std::ostream& operator<<(std::ostream& os, Data const& data)
   return os << data.name;
 }
 
-std::map<FullState, Data> states;
-std::map<FullState, Data>::iterator last_state = states.end();
-std::set<std::pair<FullState, FullState>> directed_graph;
-int count = 0;
-
-void write_transitions_gv();
-
 struct Node {
-  std::map<FullState, Data>::iterator me;
+  std::map<montecarlo::FullState, montecarlo::Data>::iterator me;
+  std::list<Node>::iterator self;
   std::list<std::list<Node>::iterator> inputs;
   std::list<std::list<Node>::iterator> outputs;
 
-  Node(std::map<FullState, Data>::iterator _me) : me(_me) { }
+  Node(std::map<montecarlo::FullState, montecarlo::Data>::iterator _me) : me(_me) { }
 
-  bool operator==(std::map<FullState, Data>::iterator const& _me) const { return me == _me; }
+  bool operator==(std::map<montecarlo::FullState, montecarlo::Data>::iterator const& _me) const { return me == _me; }
   bool single_inout() const { return inputs.size() == 1 && outputs.size() == 1; }
   bool collapses() const { return single_inout() && (*outputs.begin())->single_inout() && me->first.collapses((*outputs.begin())->me->first); }
+  void collapse(std::string& name, std::string& desc);
 };
 
-std::ostream& operator<<(std::ostream& os, std::list<Node>::iterator const& node)
+void Node::collapse(std::string& name, std::string& desc)
 {
-  auto begin_node = node;
+  auto begin_node = self;
   for (;;)
   {
     auto tmp = begin_node->inputs.begin();
@@ -164,76 +166,21 @@ std::ostream& operator<<(std::ostream& os, std::list<Node>::iterator const& node
       break;
     begin_node = *tmp;
   }
-  auto end_node = node;
+  auto end_node = self;
   while (end_node->collapses())
     end_node = *end_node->outputs.begin();
-  std::string name = begin_node->me->second.name;
+  name = begin_node->me->second.name;
   if (begin_node != end_node)
     name += '_' + end_node->me->second.name;
-  return os << name;
-}
-
-std::list<Node> nodes;
-
-void write_transitions_gv()
-{
-  // First convert directed_graph to something more managable.
-  for (auto transition : directed_graph)
+  std::ostringstream ss;
+  for (;;)
   {
-    auto from = states.find(transition.first);
-    auto to = states.find(transition.second);
-    auto from_node = std::find(nodes.begin(), nodes.end(), from);
-    if (from_node == nodes.end())
-    {
-      nodes.push_back(from);
-      from_node = nodes.end();
-      --from_node;
-    }
-    auto to_node = std::find(nodes.begin(), nodes.end(), to);
-    if (to_node == nodes.end())
-    {
-      nodes.push_back(to);
-      to_node = nodes.end();
-      --to_node;
-    }
-    from_node->outputs.push_back(to_node);
-    to_node->inputs.push_back(from_node);
+    ss << begin_node->me->first.description << " (" << begin_node->me->first.filename << ':' << begin_node->me->first.line << ")\n";
+    if (begin_node == end_node)
+      break;
+    begin_node = *begin_node->outputs.begin();
   }
-
-  std::ofstream ofile;
-  ofile.open("transitions.gv");
-  ofile << "strict digraph transitions {\n";
-  ofile << "  node [style=filled];\n";
-  for (auto node = nodes.begin(); node != nodes.end(); ++node)
-  {
-    if (node->collapses())
-      continue;
-    ofile << "  " << node << "[";
-    // Print node label.
-    ofile << "label=\"" << node->me->first.description << " (" << node->me->first.filename << ':' << node->me->first.line << ")\n";
-    montecarlo::FullState const& fs(node->me->first);
-    fs.print_s123(ofile);
-    ofile << "\n";
-    fs.print_base_and_avdance_state(ofile);
-    ofile << "\n";
-    fs.print_task_state(ofile);
-    ofile << "\"";
-
-    AIStatefulTask::task_state_st const& ts(fs.task_state);
-    if (ts.idle)
-      ofile << ",color=green";
-    else if (ts.skip_idle)
-      ofile << ",color=lightblue";
-    if (ts.run_state == AIStatefulTask::max_state)
-      ofile << ",shape=box";
-    else if (ts.run_state == AIStatefulTask::max_state + 1)
-      ofile << ",shape=hexagon";
-    ofile << "];\n";
-    for (auto out : node->outputs)
-      ofile << "  " << node << " -> " << out << ";\n";
-  }
-  ofile << "}\n";
-  ofile.close();
+  desc = ss.str();
 }
 
 } // namespace montecarlo
@@ -244,6 +191,15 @@ class MonteCarlo : public AIStatefulTask {
   private:
     int m_index;
     std::mt19937 m_rand;
+    bool m_cont_from_mainloop;
+    bool m_inside_multiplex_impl;
+    int m_inside_probe_impl;
+    bool m_state_changed_and_idle_called;
+
+    std::map<montecarlo::FullState, montecarlo::Data> m_states;
+    std::map<montecarlo::FullState, montecarlo::Data>::iterator m_last_state = m_states.end();
+    std::set<std::pair<montecarlo::FullState, montecarlo::FullState>> m_directed_graph;
+    int m_transitions_count;
 
   protected:
     typedef AIStatefulTask direct_base_type;    // The base class of this task.
@@ -256,9 +212,20 @@ class MonteCarlo : public AIStatefulTask {
 
   public:
     static state_type const max_state = MonteCarlo_beta + 1;
-    MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed) { MonteCarloProbe("After construction"); }
+    MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed),
+        m_cont_from_mainloop(false), m_inside_multiplex_impl(false), m_inside_probe_impl(0),
+        m_state_changed_and_idle_called(false), m_transitions_count(0) { MonteCarloProbe("After construction"); }
 
     void set_number(int n) { m_index = n; }
+    void set_cont_from_mainloop(bool on) { m_cont_from_mainloop = on; }
+    void set_inside_multiplex_impl(bool on) { m_inside_multiplex_impl = on; }
+    void inc_inside_probe_impl() { ++m_inside_probe_impl; }
+    void dec_inside_probe_impl() { --m_inside_probe_impl; }
+    void write_transitions_gv();
+
+    bool get_cont_from_mainloop() const { return m_cont_from_mainloop; }
+    bool get_inside_multiplex_impl() const { return m_inside_multiplex_impl; }
+    int get_inside_probe_impl() const { return m_inside_probe_impl; }
 
   protected:
     // The destructor must be protected.
@@ -301,15 +268,16 @@ void MonteCarlo::finish_impl()
 
 void MonteCarlo::multiplex_impl(state_type run_state)
 {
+  set_inside_multiplex_impl(true);
   switch(run_state)
   {
     case MonteCarlo_alpha:
     case MonteCarlo_beta:
     {
-      int randomnumber = std::uniform_int_distribution<>{1, 6}(m_rand);
+      int randomnumber = std::uniform_int_distribution<>{10, 69}(m_rand);
       Dout(dc::notice, "randomnumber = " << randomnumber);
       bool state_changed = false;
-      switch(randomnumber)
+      switch(randomnumber / 10)
       {
         case 1:
         case 2:
@@ -332,57 +300,205 @@ void MonteCarlo::multiplex_impl(state_type run_state)
           break;
       }
       // We MUST call idle() or yield() if the state didn't change.
-      if (!state_changed || randomnumber <= 2)
+      if (!state_changed || randomnumber < 30)
       {
-        if (randomnumber == 1)
+        if (randomnumber < 20)
+        {
           idle();
+          if (state_changed)
+            m_state_changed_and_idle_called = true;    // Tell montecarlo machinery that it is ok to insert a cont() in this case.
+        }
+        else
+          yield(&gMainThreadEngine);
+      }
+      // Call idle() or yield() anyway in 20% of the cases after a call to set_state or advance_state.
+      else if (randomnumber % 10 < 2)
+      {
+        if (randomnumber % 10 == 0)
+        {
+          idle();
+          if (state_changed)
+            m_state_changed_and_idle_called = true;    // Tell montecarlo machinery that it is ok to insert a cont() in this case.
+        }
         else
           yield(&gMainThreadEngine);
       }
       break;
     }
   }
+  set_inside_multiplex_impl(false);
 }
 
 void MonteCarlo::probe_impl(char const* file, int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str)
 {
+  inc_inside_probe_impl();
+
   static std::thread::id s_id;
   ASSERT(aithreadid::is_single_threaded(s_id));  // Fails if more than one thread executes this line.
 
   using namespace montecarlo;
 
   boost::filesystem::path path(file);
-  FullState full_state(path.filename().string(), file_line, description, state, s1, s1_str, s2, s2_str, s3, s3_str);
+  montecarlo::FullState full_state(path.filename().string(), file_line, description, state, s1, s1_str, s2, s2_str, s3, s3_str);
 
   // Insert the new state into the std::set.
-  auto it = states.find(full_state);
-  if (it == states.end())
+  auto it = m_states.find(full_state);
+  if (it == m_states.end())
   {
     static int node_count = 0;
     std::stringstream node_name;
     node_name << "n" << node_count;
     ++node_count;
-    Dout(dc::warning, "New node (" << node_name.str() << "): " << full_state);
-    auto res = states.insert(std::make_pair(full_state, node_name.str()));
+    Dout(dc::mcstate, "New node (" << node_name.str() << "): " << full_state);
+    auto res = m_states.insert(std::make_pair(full_state, node_name.str()));
     it = res.first;
   }
 
-  if (last_state != states.end())
+  if (m_last_state != m_states.end())
   {
-    auto res = directed_graph.insert(std::make_pair(last_state->first, full_state));
+    auto res = m_directed_graph.insert(std::make_pair(m_last_state->first, full_state));
     if (res.second)
     {
-      ++count;
-      Dout(dc::always, last_state->first << "(" << last_state->second << ") -> " << full_state << " {" << count << '}');
-      last_state->second.outputs++;
+      ++m_transitions_count;
+      Dout(dc::mcstate, m_last_state->first << "(" << m_last_state->second << ") -> " << full_state << " {" << m_transitions_count << '}');
+      m_last_state->second.outputs++;
       it->second.inputs++;
-      if (count == 154)
+      if (m_transitions_count >= 230)
         write_transitions_gv();
     }
   }
 
-  last_state = it;
+  m_last_state = it;
+
+  // Only ever insert control function calls when we're not inside a critical area of mSubState.
+  if (!m_sub_state_locked)
+  {
+    // It should only ever happen (by design of the task) that cont() is called when the task is idle,
+    // and only exactly one cont() may be triggered in such cases. So, we should not insert a cont()
+    // here when we are already triggering anything else.
+    if (it->first.task_state.idle && m_state_changed_and_idle_called && m_inside_probe_impl == 1)
+    {
+      // Insert a cont() once every 50 times.
+      int randomnumber = std::uniform_int_distribution<>{0, 50}(m_rand);
+      if (randomnumber == 0)
+      {
+        Dout(dc::statefultask, "Insertion of cont() at " << full_state.filename << ':' << full_state.line);
+        debug::Mark __mark;
+        cont();
+      }
+    }
+  }
+
+  // If we get here and the state is not idle, then we can/should reset this because apparently we were continued again.
+  if (!it->first.task_state.idle)
+    m_state_changed_and_idle_called = false;
+
+  dec_inside_probe_impl();
 }
+
+void MonteCarlo::write_transitions_gv()
+{
+  std::list<montecarlo::Node> nodes;
+
+  // First convert m_directed_graph to something more managable.
+  for (auto transition : m_directed_graph)
+  {
+    auto from = m_states.find(transition.first);
+    auto to = m_states.find(transition.second);
+    auto from_node = std::find(nodes.begin(), nodes.end(), from);
+    if (from_node == nodes.end())
+    {
+      nodes.push_back(from);
+      from_node = nodes.end();
+      --from_node;
+      nodes.back().self = from_node;
+    }
+    auto to_node = std::find(nodes.begin(), nodes.end(), to);
+    if (to_node == nodes.end())
+    {
+      nodes.push_back(to);
+      to_node = nodes.end();
+      --to_node;
+      nodes.back().self = to_node;
+    }
+    from_node->outputs.push_back(to_node);
+    to_node->inputs.push_back(from_node);
+  }
+
+  std::ofstream ofile;
+  ofile.open("transitions.gv");
+  ofile << "strict digraph transitions {\n";
+  ofile << "  node [style=filled];\n";
+  for (auto node = nodes.begin(); node != nodes.end(); ++node)
+  {
+    if (node->collapses())
+      continue;
+
+    std::string node_name, node_description;
+    node->collapse(node_name, node_description);
+    ofile << "  " << node_name << " [";
+    // Print node label.
+    ofile << "label=\"" << node_description;
+    montecarlo::FullState const& fs(node->me->first);
+    fs.print_s123(ofile);
+    ofile << "\n";
+    fs.print_base_and_advance_state(ofile);
+    ofile << "\n";
+    fs.print_task_state(ofile);
+    ofile << "\"";
+
+    AIStatefulTask::task_state_st const& ts(fs.task_state);
+    if (ts.idle)
+      ofile << ",color=green";
+    else if (ts.skip_idle)
+      ofile << ",color=lightblue";
+    else if (node_description.find("begin loop") != std::string::npos && fs.s1 == normal_run && ts.base_state == bs_multiplex)
+      ofile << ",color=red";
+    if (ts.run_state == MonteCarlo_alpha)
+      ofile << ",shape=box";
+    else if (ts.run_state == MonteCarlo_beta)
+      ofile << ",shape=hexagon";
+    ofile << "];\n";
+
+    for (auto out : node->outputs)
+    {
+      std::string out_name, out_description;
+      out->collapse(out_name, out_description);
+      std::string label;
+      ofile << "  " << node_name << " -> " << out_name;
+      if (out_description.find("Before abort()") != std::string::npos)
+        label += "/abort()";
+      if (out_description.find("Before advance_state()") != std::string::npos)
+        label += std::string("/advance_state(") + out->me->first.s1_str + ")";
+      if (out_description.find("Before cont()") != std::string::npos)
+        label += "/cont()";
+      if (out_description.find("Before finish()") != std::string::npos)
+        label += "/finish()";
+      if (out_description.find("Before force_kill()") != std::string::npos)
+        label += "/force_kill()";
+      if (out_description.find("Before idle()") != std::string::npos)
+        label += "/idle()";
+      if (out_description.find("Before kill()") != std::string::npos)
+        label += "/kill()";
+      if (out_description.find("Before run()") != std::string::npos)
+        label += "/run()";
+      if (out_description.find("Before set_state()") != std::string::npos)
+        label += std::string("/set_state(") + out->me->first.s1_str + ")";
+      if (out_description.find("Before signalled()") != std::string::npos)
+        label += "/signalled()";
+      if (out_description.find("Before wait()") != std::string::npos)
+        label += "/wait()";
+      if (out_description.find("Calling yield()") != std::string::npos)
+        label += "/yield()";
+      if (!label.empty())
+        ofile << " [label=\"" << label.substr(1) << "\",fontsize=\"24\"]";
+      ofile << ";\n";
+    }
+  }
+  ofile << "}\n";
+  ofile.close();
+}
+
 
 int main()
 {
@@ -414,7 +530,9 @@ int main()
     {
       Dout(dc::notice, "Looped " << count << " times, calling cont().");
       count = 0;
+      montecarlo->set_cont_from_mainloop(true);
       montecarlo->cont();
+      montecarlo->set_cont_from_mainloop(false);
     }
   }
 
