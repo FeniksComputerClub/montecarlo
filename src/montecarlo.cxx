@@ -193,7 +193,6 @@ class MonteCarlo : public AIStatefulTask {
     std::mt19937 m_rand;
     bool m_cont_from_mainloop;
     bool m_inside_multiplex_impl;
-    int m_inside_probe_impl;
     bool m_state_changed_and_idle_called;
 
     std::map<montecarlo::FullState, montecarlo::Data> m_states;
@@ -213,19 +212,16 @@ class MonteCarlo : public AIStatefulTask {
   public:
     static state_type const max_state = MonteCarlo_beta + 1;
     MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed),
-        m_cont_from_mainloop(false), m_inside_multiplex_impl(false), m_inside_probe_impl(0),
+        m_cont_from_mainloop(false), m_inside_multiplex_impl(false),
         m_state_changed_and_idle_called(false), m_transitions_count(0) { MonteCarloProbe("After construction"); }
 
     void set_number(int n) { m_index = n; }
     void set_cont_from_mainloop(bool on) { m_cont_from_mainloop = on; }
     void set_inside_multiplex_impl(bool on) { m_inside_multiplex_impl = on; }
-    void inc_inside_probe_impl() { ++m_inside_probe_impl; }
-    void dec_inside_probe_impl() { --m_inside_probe_impl; }
     void write_transitions_gv();
 
     bool get_cont_from_mainloop() const { return m_cont_from_mainloop; }
     bool get_inside_multiplex_impl() const { return m_inside_multiplex_impl; }
-    int get_inside_probe_impl() const { return m_inside_probe_impl; }
 
   protected:
     // The destructor must be protected.
@@ -331,8 +327,6 @@ void MonteCarlo::multiplex_impl(state_type run_state)
 
 void MonteCarlo::probe_impl(char const* file, int file_line, AIStatefulTask::task_state_st state, char const* description, int s1, char const* s1_str, int s2, char const* s2_str, int s3, char const* s3_str)
 {
-  inc_inside_probe_impl();
-
   static std::thread::id s_id;
   ASSERT(aithreadid::is_single_threaded(s_id));  // Fails if more than one thread executes this line.
 
@@ -392,8 +386,6 @@ void MonteCarlo::probe_impl(char const* file, int file_line, AIStatefulTask::tas
   // If we get here and the state is not idle, then we can/should reset this because apparently we were continued again.
   if (!it->first.task_state.idle)
     m_state_changed_and_idle_called = false;
-
-  dec_inside_probe_impl();
 }
 
 void MonteCarlo::write_transitions_gv()
