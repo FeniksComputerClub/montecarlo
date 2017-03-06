@@ -31,7 +31,11 @@ m4_include([cwm4/configure_ac_top.m4])
 # We use doxygen for documentation.
 #CW_DOXYGEN
 
+# undefined macro: AX_BOOST_BASE means you need to install the package 'autoconf-archive'.
 AX_BOOST_BASE([1.54.0])
+# configure: error: Could not find a version of the library! Means your system is broken.
+# Trying passing --with-boost-libdir=/usr/lib/x86_64-linux-gnu to configure, where the
+# path contains libboost_system.so (ie, /usr/lib/i386-linux-gnu on 32bit machines).
 AX_BOOST_SYSTEM
 AX_BOOST_FILESYSTEM
 
