@@ -31,7 +31,7 @@ m4_include([cwm4/configure_ac_top.m4])
 # We use doxygen for documentation.
 #CW_DOXYGEN
 
-AX_BOOST_BASE([1.58.0])
+AX_BOOST_BASE([1.54.0])
 AX_BOOST_SYSTEM
 AX_BOOST_FILESYSTEM
 
