@@ -85,8 +85,8 @@ void FullState::print_base_and_advance_state(std::ostream& os) const
 void FullState::print_task_state(std::ostream& os) const
 {
   if (task_state.need_run) os << " need_run";
-  if (task_state.idle) os << " idle";
-  if (task_state.skip_idle) os << " skip_idle";
+  if (task_state.skip_idle == -1) os << " idle";
+  if (task_state.skip_idle > 0) os << " skip_idle";
   if (task_state.blocked) os << " blocked";
   if (task_state.reset) os << " reset";
   if (task_state.aborted) os << " aborted";
@@ -118,8 +118,6 @@ bool operator<(FullState const& fs1,  FullState const& fs2)
     return fs2.task_state.reset;
   if (fs1.task_state.need_run != fs2.task_state.need_run)
     return fs2.task_state.need_run;
-  if (fs1.task_state.idle != fs2.task_state.idle)
-    return fs2.task_state.idle;
   if (fs1.task_state.skip_idle != fs2.task_state.skip_idle)
     return fs2.task_state.skip_idle;
   if (fs1.task_state.aborted != fs2.task_state.aborted)
@@ -433,7 +431,7 @@ void MonteCarlo::probe_impl(char const* file, int file_line, bool record_state, 
       // It should only ever happen (by design of the task) that cont() is called when the task is idle,
       // and only exactly one cont() may be triggered in such cases. So, we should not insert a cont()
       // here when we are already triggering anything else.
-      if (state.idle && m_state_changed_and_idle_called && m_inside_probe_impl == 1)
+      if (state.skip_idle == -1 && m_state_changed_and_idle_called && m_inside_probe_impl == 1)
       {
         // Insert a cont() once every 30 times.
         if (randomnumber == 0)
@@ -470,7 +468,7 @@ void MonteCarlo::probe_impl(char const* file, int file_line, bool record_state, 
   }
 
   // If we get here and the state is not idle, then we can/should reset this because apparently we were continued again.
-  if (!state.idle)
+  if (state.skip_idle != -1)
     m_state_changed_and_idle_called = false;
 }
 
@@ -527,9 +525,9 @@ void MonteCarlo::write_transitions_gv()
     ofile << "\"";
 
     AIStatefulTask::task_state_st const& ts(fs.task_state);
-    if (ts.idle)
+    if (ts.skip_idle == -1)
       ofile << ",color=green";
-    else if (ts.skip_idle)
+    else if (ts.skip_idle > 0)
       ofile << ",color=lightblue";
     else if (node_description.find("begin loop") != std::string::npos && fs.s1 == normal_run && ts.base_state == bs_multiplex)
       ofile << ",color=red";

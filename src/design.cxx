@@ -17,11 +17,11 @@ struct Task {
   void reset() { m_parent = nullptr; m_cv = nullptr; m_idle = 0; m_finished = false; }
 
   void run(Task* parent);
-  void run(ConditionVariable& cv);
+  void run(Task* parent, ConditionVariable& cv);
   void finish();
 
   void idle();
-  void cont();
+  void cont(ConditionVariable* cv);
   void wait(ConditionVariable& cv);
 
   bool running() const;
@@ -34,15 +34,16 @@ void Task::run(Task* parent)
   m_parent = parent;
 }
 
-void Task::run(ConditionVariable& cv)
+void Task::run(Task* parent, ConditionVariable& cv)
 {
+  m_parent = parent;
   m_cv = &cv;
 }
 
 Task::operator bool_type() const
 {
   // If this returns false then run() was called and finish() wasn't called yet.
-  return (!(!m_finished && (m_parent || m_cv))) ? &m_parent : 0;
+  return (!(!m_finished && m_parent)) ? &m_parent : 0;
 }
 
 void Task::idle()
@@ -50,11 +51,6 @@ void Task::idle()
   // idle() may only be called while we are running (because it may only be called from multiplex_impl()).
   ASSERT(m_idle >= 0);
   --m_idle;
-}
-
-void Task::cont()
-{
-  ++m_idle;
 }
 
 bool Task::running() const
@@ -70,9 +66,8 @@ class ConditionVariable {
     int m_idle;
   public:
     ConditionVariable() : m_idle(0) { }
-    void idle();
+    int idle();
     void cont();
-    bool running() const;
 };
 
 void Task::finish()
@@ -80,35 +75,35 @@ void Task::finish()
   m_finished = true;
   if (m_parent)
   {
-    m_parent->cont();
+    m_parent->cont(m_cv);
     // After a child tasks finishes, we always need the parent to run (in this case; we don't abort).
     ASSERT(m_parent->running());
   }
-  else if (m_cv)
-  {
-    m_cv->cont();
-  }
 }
 
-void Task::wait(ConditionVariable& cv)
+void Task::cont(ConditionVariable* cv)
 {
-  cv.idle();
-}
-
-void ConditionVariable::idle()
-{
-  ASSERT(m_idle >= 0);
-  --m_idle;
+  cv->cont();
+  m_idle = 0;     // Start running.
 }
 
 void ConditionVariable::cont()
 {
   ++m_idle;
+  //if (m_idle > 1)
+  //  m_idle = 1;
 }
 
-bool ConditionVariable::running() const
+void Task::wait(ConditionVariable& cv)
 {
-  return m_idle >= 0;
+  m_idle = cv.idle();   // Go idle if cv is not running.
+}
+
+int ConditionVariable::idle()
+{
+  ASSERT(m_idle >= 0);
+  --m_idle;
+  return m_idle >= 0 ? 0 : -1;
 }
 
 //===========================================================================
@@ -124,15 +119,20 @@ class Inserter : public MultiLoop {
   public:
     Inserter(int n, int m) : MultiLoop(n), m_i(0), m_N(n), m_M(m), tasks(n) { }
     void add(Task& task) { ASSERT(m_i < m_N); tasks[m_i++] = &task; }
-    void insert(int m) const;
+    int insert(int m) const;
     int number_of_insertions_at(int m);
 };
 
-void Inserter::insert(int m) const
+int Inserter::insert(int m) const
 {
+  int finished = 0;
   for (int task = 0; task < m_N; ++task)
     if ((*this)[task] == m)
+    {
       tasks[task]->finish();
+      ++finished;
+    }
+  return finished;
 }
 
 int Inserter::number_of_insertions_at(int m)
@@ -184,11 +184,12 @@ int main()
 
 void TestSuite::test1()
 {
-  task1.run(this);              // Start one task.
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start one task.
   ASSERT(!task1);               // task1 is not finished (is still going to call the callback).
   ASSERT(running());            // We are running.
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(!running());           // We are not running (we're idle).
 
   task1.finish();               // Task finishes.
@@ -198,12 +199,13 @@ void TestSuite::test1()
 
 void TestSuite::test2()
 {
-  task1.run(this);              // Start one task.
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start one task.
   task1.finish();               // Task finishes.
   ASSERT(task1);                // task1 is finished.
   ASSERT(running());            // We are running.
 
-  idle(true);                   // Go idle (true = tell testsuite that all tasks finished).
+  wait(cv);                     // Go idle (true = tell testsuite that all tasks finished).
   ASSERT(running());
 
   ASSERT(task1);                // task1 is finished.
@@ -211,18 +213,19 @@ void TestSuite::test2()
 
 void TestSuite::test3()
 {
-  task1.run(this);              // Start two tasks.
-  task2.run(this);
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start two tasks.
+  task2.run(this, cv);
   ASSERT(running());
   ASSERT(!task1 && !task2);     // Neither task is finished.
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(!running());
 
   task1.finish();               // Task 1 finishes.
   ASSERT(task1 && !task2);      // Task 1 is finished, task 2 isn't.
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(!running());
 
   task2.finish();               // Task 2 finishes.
@@ -231,30 +234,32 @@ void TestSuite::test3()
 
 void TestSuite::test4()
 {
-  task1.run(this);              // Start two tasks.
-  task2.run(this);
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start two tasks.
+  task2.run(this, cv);
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(!running());
 
   task1.finish();               // Task 1 finishes.
   task2.finish();               // Task 2 finishes.
 
-  idle(true);                   // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 }
 
 void TestSuite::test5()
 {
-  task1.run(this);              // Start two tasks.
-  task2.run(this);
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start two tasks.
+  task2.run(this, cv);
 
   task1.finish();               // Task 1 finishes.
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(!running());
 
   task2.finish();               // Task 2 finishes.
@@ -262,32 +267,34 @@ void TestSuite::test5()
 
 void TestSuite::test6()
 {
-  task1.run(this);              // Start two tasks.
-  task2.run(this);
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start two tasks.
+  task2.run(this, cv);
 
   task1.finish();               // Task 1 finishes.
 
-  idle();                       // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 
   task2.finish();               // Task 2 finishes.
 
-  idle(true);                   // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 }
 
 void TestSuite::test7()
 {
-  task1.run(this);              // Start two tasks.
-  task2.run(this);
+  ConditionVariable cv;
+  task1.run(this, cv);          // Start two tasks.
+  task2.run(this, cv);
 
   task1.finish();               // Task 1 finishes.
   task2.finish();               // Task 2 finishes.
 
-  idle(true);                   // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 
-  idle(true);                   // Go idle.
+  wait(cv);                     // Go idle.
   ASSERT(running());
 }
 
@@ -295,13 +302,13 @@ void TestSuite::test8()
 {
   int count = 0;
   int loops = 0;
-  Inserter ml(4, 7);            // 4 tasks, 7 insertion points.
+  Inserter ml(4, 25);            // 4 tasks, 7 insertion points.
   ml.add(task1);
   ml.add(task2);
   ml.add(task3);
   ml.add(task4);
   for (; !ml.finished(); ml.next_loop())
-    for (; ml() < 7; ++ml)
+    for (; ml() < 25; ++ml)
       if (ml.inner_loop())
       {
         ++loops;
@@ -309,50 +316,67 @@ void TestSuite::test8()
         int wait_calls = 0;
 
         ConditionVariable cv;         // A condition variable.
-        task1.run(cv);                // Start three tasks that signal the cv when they finish.
-        task2.run(cv);
-        task3.run(cv);
-        task4.run(cv);
+        task1.run(this, cv);          // Start three tasks that signal the cv when they finish.
+        task2.run(this, cv);
+        task3.run(this, cv);
+        task4.run(this, cv);
 
         int n = 0;
         bool nonsense = false;
-        ml.insert(n++);
-        while (!((task1 && task2 && task3) || (task2 && task3 && task4)))       // We need either task1, 2 and 3 to have finished, or 2, 3 and 4.
+        int finished = ml.insert(n++);
+        for(;;)
         {
-          ml.insert(n++);
+          bool task1t1 = task1;
+          finished += ml.insert(n++);
+          bool task2t1 = task2;
+          finished += ml.insert(n++);
+          bool task3t1 = task3;
+          finished += ml.insert(n++);
+          bool task2t2 = task2;
+          finished += ml.insert(n++);
+          bool task3t2 = task3;
+          finished += ml.insert(n++);
+          bool task4t2 = task4;
+          finished += ml.insert(n++);
+          if ((task1t1 && task2t1 && task3t1) || (task2t2 && task3t2 && task4t2))       // We need either task1, 2 and 3 to have finished, or 2, 3 and 4.
+            break;
+          finished += ml.insert(n++);
           wait(cv);             // Go idle until one or more tasks are finished.
           ++wait_calls;
-          if (!cv.running() && ml.number_of_insertions_at(n) == 0)
+          if ((task1 && task2 && task3) || (task2 && task3 && task4))
+            break;
+          ASSERT(wait_calls <= finished + 1);
+          ASSERT(running() || finished < 4);
+          if (!running() && ml.number_of_insertions_at(n) == 0)
           {
             nonsense = true;
-            break;           // The test is nonsense.
+            break;              // The test is nonsense.
           }
-          ml.insert(n++);
-          ASSERT(cv.running()); // We should only continue to run after a wait when we're really running ;).
+          finished += ml.insert(n++);
+          ASSERT(running()); // We should only continue to run after a wait when we're really running ;).
         }
         if (nonsense)
           continue;
-        wait(cv);
-        ++wait_calls;
-        count += cv.running() ? 1 : 0;
+        ++count;
         for(;;)
         {
-          int finished = 0;
-          finished += task1 ? 1 : 0;
-          finished += task2 ? 1 : 0;
-          finished += task3 ? 1 : 0;
-          finished += task4 ? 1 : 0;
-          while (cv.running())
+          int done = 0;
+          done += task1 ? 1 : 0;
+          done += task2 ? 1 : 0;
+          done += task3 ? 1 : 0;
+          done += task4 ? 1 : 0;
+          while (running())
           {
             wait(cv);
             ++wait_calls;
           }
-          if (finished == 4)
+          if (done == 4)
             break;
-          ASSERT(n < 7);
-          ml.insert(n++);
+          ASSERT(n < 25);
+          finished += ml.insert(n++);
         }
-        ASSERT(wait_calls == 5);
+        ASSERT(finished == 4);
+        ASSERT(wait_calls <= 5);
       }
   Dout(dc::notice, "count = " << count << "; loops = " << loops);
 }
