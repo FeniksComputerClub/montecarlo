@@ -1,109 +1,100 @@
 #include "sys.h"
 #include "debug.h"
 #include "utils/MultiLoop.h"
-
-struct ConditionVariable;
+#include "statefultask/AIStatefulTask.h"
+#include "statefultask/AICondition.h"
+#include "statefultask/AIEngine.h"
 
 //===========================================================================
 // Task
 
-struct Task {
-  Task* m_parent;
-  ConditionVariable* m_cv;
-  int m_idle;
-  bool m_finished;
-
-  Task() { reset(); }
-  void reset() { m_parent = nullptr; m_cv = nullptr; m_idle = 0; m_finished = false; }
-
-  void run(Task* parent);
-  void run(Task* parent, ConditionVariable& cv);
-  void finish();
-
-  void idle();
-  void cont(ConditionVariable* cv);
-  void wait(ConditionVariable& cv);
-
-  bool running() const;
-  typedef Task* const* bool_type;
-  operator bool_type() const;
-};
-
-void Task::run(Task* parent)
-{
-  m_parent = parent;
-}
-
-void Task::run(Task* parent, ConditionVariable& cv)
-{
-  m_parent = parent;
-  m_cv = &cv;
-}
-
-Task::operator bool_type() const
-{
-  // If this returns false then run() was called and finish() wasn't called yet.
-  return (!(!m_finished && m_parent)) ? &m_parent : 0;
-}
-
-void Task::idle()
-{
-  // idle() may only be called while we are running (because it may only be called from multiplex_impl()).
-  ASSERT(m_idle >= 0);
-  --m_idle;
-}
-
-bool Task::running() const
-{
-  return m_idle >= 0;
-}
-
-//===========================================================================
-//
-
-class ConditionVariable {
+struct Task : public AIStatefulTask {
   private:
-    int m_idle;
+    bool m_do_finish;
+
+  protected:
+    // The base class of this task.
+    typedef AIStatefulTask direct_base_type;
+
+    // The different states of the task.
+    enum design_state_type {
+      Task_start = direct_base_type::max_state,
+      Task_done,
+    };
   public:
-    ConditionVariable() : m_idle(0) { }
-    int idle();
-    void cont();
+    static state_type const max_state = Task_done + 1;    // One beyond the largest state.
+
+  public:
+    // The derived class must have a default constructor.
+    Task();
+
+  protected:
+    // The destructor must be protected.
+    /*virtual*/ ~Task();
+
+  protected:
+    // The following virtual functions must be implemented:
+
+    // Handle initializing the object.
+    /*virtual*/ void initialize_impl();
+
+    // Handle mRunState.
+    /*virtual*/ void multiplex_impl(state_type run_state);
+
+    // Handle aborting from current bs_multiplex state (the default AIStatefulTask::abort_impl() does nothing).
+    /*virtual*/ void abort_impl() { }
+
+    // Handle cleaning up from initialization (or post abort) state (the default AIStatefulTask::finish_impl() does nothing).
+    /*virtual*/ void finish_impl() { }
+
+    // Return human readable string for run_state.
+    /*virtual*/ char const* state_str_impl(state_type run_state) const;
+
+  public:
+    // Cause task to finish.
+    void do_finish() { m_do_finish = true; gMainThreadEngine.mainloop(); }
 };
 
-void Task::finish()
+Task::Task() : AIStatefulTask(true), m_do_finish(false)
 {
-  m_finished = true;
-  if (m_parent)
+}
+
+Task::~Task()
+{
+}
+
+char const* Task::state_str_impl(state_type run_state) const
+{
+  switch(run_state)
   {
-    m_parent->cont(m_cv);
-    // After a child tasks finishes, we always need the parent to run (in this case; we don't abort).
-    ASSERT(m_parent->running());
+    AI_CASE_RETURN(Task_start);
+    AI_CASE_RETURN(Task_done);
   }
+  return "UNKNOWN";
 }
 
-void Task::cont(ConditionVariable* cv)
+void Task::initialize_impl()
 {
-  cv->cont();
-  m_idle = 0;     // Start running.
+  set_state(Task_start);
 }
 
-void ConditionVariable::cont()
+void Task::multiplex_impl(state_type run_state)
 {
-  ++m_idle;
-  //if (m_idle > 1)
-  //  m_idle = 1;
-}
-
-void Task::wait(ConditionVariable& cv)
-{
-  m_idle = cv.idle();   // Go idle if cv is not running.
-}
-
-int ConditionVariable::idle()
-{
-  ASSERT(m_idle >= 0);
-  --m_idle;
-  return m_idle >= 0 ? 0 : -1;
+  switch(run_state)
+  {
+    case Task_start:
+      set_state(Task_done);
+      yield();
+      break;
+    case Task_done:
+      if (!m_do_finish)
+      {
+        yield();
+        break;
+      }
+      finish();
+      break;
+  }
 }
 
 //===========================================================================
@@ -114,11 +105,11 @@ class Inserter : public MultiLoop {
     int m_i;                    // Runs over elements of tasks when calling add().
     int m_N;                    // The number of tasks / for loops.
     int m_M;                    // The number of times insert will be called per inner loop.
-    std::vector<Task*> tasks;   // N is size of this vector.
+    std::vector<boost::intrusive_ptr<Task>*> tasks;   // N is size of this vector.
 
   public:
     Inserter(int n, int m) : MultiLoop(n), m_i(0), m_N(n), m_M(m), tasks(n) { }
-    void add(Task& task) { ASSERT(m_i < m_N); tasks[m_i++] = &task; }
+    void add(boost::intrusive_ptr<Task>* task) { ASSERT(m_i < m_N); tasks[m_i++] = task; }
     int insert(int m) const;
     int number_of_insertions_at(int m);
 };
@@ -129,7 +120,7 @@ int Inserter::insert(int m) const
   for (int task = 0; task < m_N; ++task)
     if ((*this)[task] == m)
     {
-      tasks[task]->finish();
+      (*tasks[task])->do_finish();
       ++finished;
     }
   return finished;
@@ -146,37 +137,130 @@ int Inserter::number_of_insertions_at(int m)
 //===========================================================================
 // TestSuite
 
-struct TestSuite : public Task {
-  Task task1;
-  Task task2;
-  Task task3;
-  Task task4;
-  void reset() { Task::reset(); task1.reset(); task2.reset(); task3.reset(); task4.reset(); }
-  void idle(bool all_done = false) { ASSERT(all_done || !(task1 && task2 && task3 && task4)); Task::idle(); }
-  void test1();
-  void test2();
-  void test3();
-  void test4();
-  void test5();
-  void test6();
-  void test7();
-  void test8();
+struct TestSuite final : public Task {
+  protected:
+    // The base class of this task.
+    typedef Task direct_base_type;
+
+    // The different states of the task.
+    enum design_state_type {
+      Test1 = direct_base_type::max_state,
+      Test2,
+      Test3,
+      Test4,
+      Test5,
+      Test6,
+      Test7,
+      Test8
+    };
+
+  public:
+    static state_type const max_state = Test8 + 1;    // One beyond the largest state.
+
+    void test1();
+    void test2();
+    void test3();
+    void test4();
+    void test5();
+    void test6();
+    void test7();
+    void test8();
+
+  private:
+    int m_run_test;
+
+  public:
+    boost::intrusive_ptr<Task> task1;
+    boost::intrusive_ptr<Task> task2;
+    boost::intrusive_ptr<Task> task3;
+    boost::intrusive_ptr<Task> task4;
+
+    void run_test(int test);
+
+    TestSuite() : task1(new Task), task2(new Task), task3(new Task), task4(new Task) { }
+
+  protected:
+    /*virtual*/ ~TestSuite() { task1.reset(); task2.reset(); task3.reset(); task4.reset(); }
+
+    /*virtual*/ void initialize_impl();
+    /*virtual*/ void multiplex_impl(state_type run_state);
+    /*virtual*/ char const* state_str_impl(state_type run_state) const;
 };
+
+char const* TestSuite::state_str_impl(state_type run_state) const
+{
+  switch(run_state)
+  {
+    AI_CASE_RETURN(Test1);
+    AI_CASE_RETURN(Test2);
+    AI_CASE_RETURN(Test3);
+    AI_CASE_RETURN(Test4);
+    AI_CASE_RETURN(Test5);
+    AI_CASE_RETURN(Test6);
+    AI_CASE_RETURN(Test7);
+    AI_CASE_RETURN(Test8);
+  }
+  ASSERT(run_state < direct_base_type::max_state);
+  return direct_base_type::state_str_impl(run_state);
+}
 
 int main()
 {
   Debug(NAMESPACE_DEBUG::init());
 
-  TestSuite testsuite;
+  boost::intrusive_ptr<TestSuite> testsuite;
 
-  testsuite.reset(); testsuite.test1();
-  testsuite.reset(); testsuite.test2();
-  testsuite.reset(); testsuite.test3();
-  testsuite.reset(); testsuite.test4();
-  testsuite.reset(); testsuite.test5();
-  testsuite.reset(); testsuite.test6();
-  testsuite.reset(); testsuite.test7();
-  testsuite.reset(); testsuite.test8();
+  testsuite = new TestSuite; testsuite->run_test(1); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(2); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(3); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(4); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(5); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(6); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(7); testsuite.reset();
+  testsuite = new TestSuite; testsuite->run_test(8); testsuite.reset();
+}
+
+void TestSuite::run_test(int test)
+{
+  m_run_test = test;
+  run();
+}
+
+void TestSuite::initialize_impl()
+{
+  set_state(Test1 + m_run_test - 1);
+}
+
+void TestSuite::multiplex_impl(state_type run_state)
+{
+  switch(run_state)
+  {
+    case Test1:
+      test1();
+      break;
+    case Test2:
+      test2();
+      break;
+    case Test3:
+      test3();
+      break;
+    case Test4:
+      test4();
+      break;
+    case Test5:
+      test5();
+      break;
+    case Test6:
+      test6();
+      break;
+    case Test7:
+      test7();
+      break;
+    case Test8:
+      test8();
+      break;
+  }
+  abort();
 }
 
 //===========================================================================
@@ -184,176 +268,208 @@ int main()
 
 void TestSuite::test1()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start one task.
-  ASSERT(!task1);               // task1 is not finished (is still going to call the callback).
+  DoutEntering(dc::notice, "TestSuite::test1()");
   ASSERT(running());            // We are running.
 
-  wait(cv);                     // Go idle.
-  ASSERT(!running());           // We are not running (we're idle).
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start one task.
+  gMainThreadEngine.mainloop();
 
-  task1.finish();               // Task finishes.
-  ASSERT(task1);                // task1 is finished.
-  ASSERT(running());            // We are running again.
+  ASSERT(!*task1);              // Task 1 is not finished (is still going to call the callback).
+  ASSERT(!waiting());           // We are not idle.
+
+  wait(cv);                     // Go idle.
+  ASSERT(waiting());            // We are idle.
+
+  task1->do_finish();           // Task 1 finishes.
+  ASSERT(*task1);               // Task 1 is finished.
+  ASSERT(!waiting());           // We are again not idle.
 }
 
 void TestSuite::test2()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start one task.
-  task1.finish();               // Task finishes.
-  ASSERT(task1);                // task1 is finished.
+  DoutEntering(dc::notice, "TestSuite::test2()");
   ASSERT(running());            // We are running.
 
-  wait(cv);                     // Go idle (true = tell testsuite that all tasks finished).
-  ASSERT(running());
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start one task.
+  gMainThreadEngine.mainloop();
 
-  ASSERT(task1);                // task1 is finished.
+  task1->do_finish();           // Task 1 finishes.
+  ASSERT(*task1);               // Task 1 is finished.
+  ASSERT(running() && !waiting());      // We are running.
+
+  wait(cv);                     // Go idle.
+  ASSERT(running() && !waiting());      // Still running.
+
+  ASSERT(*task1);               // Task 1 is finished.
 }
 
 void TestSuite::test3()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start two tasks.
-  task2.run(this, cv);
-  ASSERT(running());
-  ASSERT(!task1 && !task2);     // Neither task is finished.
+  DoutEntering(dc::notice, "TestSuite::test3()");
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start two tasks.
+  task2->run(this, &cv);
+  gMainThreadEngine.mainloop();
+
+  ASSERT(running() && !waiting());
+  ASSERT(!*task1 && !*task2);   // Neither task is finished.
 
   wait(cv);                     // Go idle.
-  ASSERT(!running());
+  ASSERT(waiting());
 
-  task1.finish();               // Task 1 finishes.
-  ASSERT(task1 && !task2);      // Task 1 is finished, task 2 isn't.
+  task1->do_finish();           // Task 1 finishes.
+  ASSERT(*task1 && !*task2);    // Task 1 is finished, task 2 isn't.
 
   wait(cv);                     // Go idle.
-  ASSERT(!running());
+  ASSERT(waiting());
 
-  task2.finish();               // Task 2 finishes.
-  ASSERT(task1 && task2);       // Both tasks finished.
+  task2->do_finish();           // Task 2 finishes.
+  ASSERT(*task1 && *task2);     // Both tasks finished.
 }
 
 void TestSuite::test4()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start two tasks.
-  task2.run(this, cv);
+  DoutEntering(dc::notice, "TestSuite::test4()");
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start two tasks.
+  task2->run(this, &cv);
+  gMainThreadEngine.mainloop();
 
   wait(cv);                     // Go idle.
-  ASSERT(!running());
+  ASSERT(waiting());
 
-  task1.finish();               // Task 1 finishes.
-  task2.finish();               // Task 2 finishes.
+  task1->do_finish();           // Task 1 finishes.
+  task2->do_finish();           // Task 2 finishes.
 
   wait(cv);                     // Go idle.
-  ASSERT(running());
+  ASSERT(running() && !waiting());
 }
 
 void TestSuite::test5()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start two tasks.
-  task2.run(this, cv);
+  DoutEntering(dc::notice, "TestSuite::test5()");
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start two tasks.
+  task2->run(this, &cv);
+  gMainThreadEngine.mainloop();
 
-  task1.finish();               // Task 1 finishes.
+  task1->do_finish();           // Task 1 finishes.
 
   wait(cv);                     // Go idle.
-  ASSERT(running());
+  ASSERT(running() && !waiting());
 
   wait(cv);                     // Go idle.
-  ASSERT(!running());
+  ASSERT(waiting());
 
-  task2.finish();               // Task 2 finishes.
+  task2->do_finish();           // Task 2 finishes.
 }
 
 void TestSuite::test6()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start two tasks.
-  task2.run(this, cv);
+  DoutEntering(dc::notice, "TestSuite::test6()");
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start two tasks.
+  task2->run(this, &cv);
+  gMainThreadEngine.mainloop();
 
-  task1.finish();               // Task 1 finishes.
-
-  wait(cv);                     // Go idle.
-  ASSERT(running());
-
-  task2.finish();               // Task 2 finishes.
+  task1->do_finish();           // Task 1 finishes.
 
   wait(cv);                     // Go idle.
-  ASSERT(running());
+  ASSERT(running() && !waiting());
+
+  task2->do_finish();           // Task 2 finishes.
+
+  wait(cv);                     // Go idle.
+  ASSERT(running() && !waiting());
 }
 
 void TestSuite::test7()
 {
-  ConditionVariable cv;
-  task1.run(this, cv);          // Start two tasks.
-  task2.run(this, cv);
+  DoutEntering(dc::notice, "TestSuite::test7()");
+  AICondition cv(*this);
+  task1->run(this, &cv);        // Start two tasks.
+  task2->run(this, &cv);
+  gMainThreadEngine.mainloop();
 
-  task1.finish();               // Task 1 finishes.
-  task2.finish();               // Task 2 finishes.
+  task1->do_finish();           // Task 1 finishes.
+  task2->do_finish();           // Task 2 finishes.
 
   wait(cv);                     // Go idle.
-  ASSERT(running());
+  ASSERT(running() && !waiting());
+
+  ASSERT(*task1 && *task2);     // Both tasks finished.
 
   wait(cv);                     // Go idle.
-  ASSERT(running());
+  ASSERT(waiting());            // Calling wait() twice on a row always causes us to go idle!
 }
 
 void TestSuite::test8()
 {
+  DoutEntering(dc::notice, "TestSuite::test8()");
+  gMainThreadEngine.setMaxDuration(10000.f);
+
   int count = 0;
   int loops = 0;
-  Inserter ml(4, 25);            // 4 tasks, 7 insertion points.
-  ml.add(task1);
-  ml.add(task2);
-  ml.add(task3);
-  ml.add(task4);
+  Inserter ml(4, 25);           // 4 tasks, 7 insertion points.
+  ml.add(&task1);
+  ml.add(&task2);
+  ml.add(&task3);
+  ml.add(&task4);
   for (; !ml.finished(); ml.next_loop())
     for (; ml() < 25; ++ml)
       if (ml.inner_loop())
       {
+        // Reset the tasks.
+        task1 = new Task;
+        task2 = new Task;
+        task3 = new Task;
+        task4 = new Task;
+
         ++loops;
-        reset();
         int wait_calls = 0;
 
-        ConditionVariable cv;         // A condition variable.
-        task1.run(this, cv);          // Start three tasks that signal the cv when they finish.
-        task2.run(this, cv);
-        task3.run(this, cv);
-        task4.run(this, cv);
+        AICondition cv(*this);  // A condition variable.
+        task1->run(this, &cv);  // Start three tasks that signal the cv when they finish.
+        task2->run(this, &cv);
+        task3->run(this, &cv);
+        task4->run(this, &cv);
+        gMainThreadEngine.mainloop();
 
         int n = 0;
         bool nonsense = false;
         int finished = ml.insert(n++);
         for(;;)
         {
-          bool task1t1 = task1;
+          bool task1t1 = *task1;
           finished += ml.insert(n++);
-          bool task2t1 = task2;
+          bool task2t1 = *task2;
           finished += ml.insert(n++);
-          bool task3t1 = task3;
+          bool task3t1 = *task3;
           finished += ml.insert(n++);
-          bool task2t2 = task2;
+          bool task2t2 = *task2;
           finished += ml.insert(n++);
-          bool task3t2 = task3;
+          bool task3t2 = *task3;
           finished += ml.insert(n++);
-          bool task4t2 = task4;
+          bool task4t2 = *task4;
           finished += ml.insert(n++);
           if ((task1t1 && task2t1 && task3t1) || (task2t2 && task3t2 && task4t2))       // We need either task1, 2 and 3 to have finished, or 2, 3 and 4.
             break;
           finished += ml.insert(n++);
           wait(cv);             // Go idle until one or more tasks are finished.
           ++wait_calls;
-          if ((task1 && task2 && task3) || (task2 && task3 && task4))
+          if ((*task1 && *task2 && *task3) || (*task2 && *task3 && *task4))
             break;
           ASSERT(wait_calls <= finished + 1);
-          ASSERT(running() || finished < 4);
-          if (!running() && ml.number_of_insertions_at(n) == 0)
+          ASSERT((running() && !waiting()) || finished < 4);
+          if (waiting() && ml.number_of_insertions_at(n) == 0)
           {
             nonsense = true;
             break;              // The test is nonsense.
           }
           finished += ml.insert(n++);
-          ASSERT(running()); // We should only continue to run after a wait when we're really running ;).
+          ASSERT(running() && !waiting()); // We should only continue to run after a wait when we're really running ;).
         }
         if (nonsense)
           continue;
@@ -361,11 +477,11 @@ void TestSuite::test8()
         for(;;)
         {
           int done = 0;
-          done += task1 ? 1 : 0;
-          done += task2 ? 1 : 0;
-          done += task3 ? 1 : 0;
-          done += task4 ? 1 : 0;
-          while (running())
+          done += *task1 ? 1 : 0;
+          done += *task2 ? 1 : 0;
+          done += *task3 ? 1 : 0;
+          done += *task4 ? 1 : 0;
+          while (running() && !waiting())
           {
             wait(cv);
             ++wait_calls;

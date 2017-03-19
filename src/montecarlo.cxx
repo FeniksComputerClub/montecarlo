@@ -3,6 +3,7 @@
 #ifdef CW_DEBUG_MONTECARLO
 #include "statefultask/AIEngine.h"
 #include "statefultask/AIAuxiliaryThread.h"
+#include "statefultask/AICondition.h"
 #include "utils/GlobalObjectManager.h"
 #include "threadsafe/aithreadid.h"
 #include "debug.h"
@@ -54,7 +55,7 @@ struct FullState {
   }
 
   void print_s123(std::ostream& os) const;
-  void print_base_and_advance_state(std::ostream& os) const;
+  void print_base_state(std::ostream& os) const;
   void print_task_state(std::ostream& os) const;
 };
 
@@ -63,7 +64,7 @@ std::ostream& operator<<(std::ostream& os, FullState const& full_state)
   os << "{ '" << full_state.description << "' (" << full_state.filename << ':' << std::dec << full_state.line << ")";
   full_state.print_s123(os);
   os << ", ";
-  full_state.print_base_and_advance_state(os);
+  full_state.print_base_state(os);
   os << ", ";
   full_state.print_task_state(os);
   return os << '}';
@@ -76,17 +77,14 @@ void FullState::print_s123(std::ostream& os) const
   if (s3 != -1) os << '/' << s3_str;
 }
 
-void FullState::print_base_and_advance_state(std::ostream& os) const
+void FullState::print_base_state(std::ostream& os) const
 {
   os << task_state.base_state_str << '/' << task_state.run_state_str;
-  if (task_state.advance_state) os << '/' << task_state.advance_state_str;
 }
 
 void FullState::print_task_state(std::ostream& os) const
 {
   if (task_state.need_run) os << " need_run";
-  if (task_state.skip_idle == -1) os << " idle";
-  if (task_state.skip_idle > 0) os << " skip_idle";
   if (task_state.blocked) os << " blocked";
   if (task_state.reset) os << " reset";
   if (task_state.aborted) os << " aborted";
@@ -110,16 +108,12 @@ bool operator<(FullState const& fs1,  FullState const& fs2)
     return fs1.task_state.base_state < fs2.task_state.base_state;
   if (fs1.task_state.run_state != fs2.task_state.run_state)
     return fs1.task_state.run_state < fs2.task_state.run_state;
-  if (fs1.task_state.advance_state != fs2.task_state.advance_state)
-    return fs1.task_state.advance_state < fs2.task_state.advance_state;
   if (fs1.task_state.blocked != fs2.task_state.blocked)
     return fs2.task_state.blocked;
   if (fs1.task_state.reset != fs2.task_state.reset)
     return fs2.task_state.reset;
   if (fs1.task_state.need_run != fs2.task_state.need_run)
     return fs2.task_state.need_run;
-  if (fs1.task_state.skip_idle != fs2.task_state.skip_idle)
-    return fs2.task_state.skip_idle;
   if (fs1.task_state.aborted != fs2.task_state.aborted)
     return fs2.task_state.aborted;
   if (fs1.task_state.finished != fs2.task_state.finished)
@@ -190,8 +184,6 @@ int const just_running_flag                     =     0x1;
 int const run_flag                              =     0x2;
 int const set_state_alpha_flag                  =     0x4;
 int const set_state_beta_flag                   =     0x8;
-int const advance_state_alpha_flag              =    0x10;
-int const advance_state_beta_flag               =    0x20;
 int const idle_flag                             =    0x40;
 int const cont_flag                             =    0x80;
 int const yield_flag                            =   0x100;
@@ -201,10 +193,7 @@ int const abort_flag                            =   0x800;
 int const finish_flag                           =  0x1000;
 int const kill_flag                             =  0x2000;
 int const force_kill_flag                       =  0x4000;
-int const inserted_advance_state_alpha_flag     =  0x8000;
-int const inserted_advance_state_beta_flag      = 0x10000;
-int const inserted_cont_flag                    = 0x20000;
-int const inserted_signalled_flag               = 0x40000;
+int const inserted_signal_flag                  = 0x20000;
 
 class MonteCarlo : public AIStatefulTask {
   private:
@@ -212,8 +201,8 @@ class MonteCarlo : public AIStatefulTask {
     std::mt19937 m_rand;
     bool m_cont_from_mainloop;
     bool m_inside_multiplex_impl;
-    bool m_state_changed_and_idle_called;
     int m_probe_flag;
+    AICondition m_condition;
 
     std::map<montecarlo::FullState, montecarlo::Data> m_states;
     std::map<montecarlo::FullState, montecarlo::Data>::iterator m_last_state = m_states.end();
@@ -234,11 +223,12 @@ class MonteCarlo : public AIStatefulTask {
     static state_type const max_state = MonteCarlo_beta + 1;
     MonteCarlo() : AIStatefulTask(true), m_index(0), m_rand(seed),
         m_cont_from_mainloop(false), m_inside_multiplex_impl(false),
-        m_state_changed_and_idle_called(false), m_probe_flag(0), m_transitions_count(0) { MonteCarloProbe("After construction"); }
+        m_probe_flag(0), m_condition(*this), m_transitions_count(0) { MonteCarloProbe("After construction"); }
 
     void set_number(int n) { m_index = n; }
     void set_cont_from_mainloop(bool on) { if (!on) m_probe_flag = 0; m_cont_from_mainloop = on; if (on) m_probe_flag = cont_flag; }
     void set_inside_multiplex_impl(bool on) { m_inside_multiplex_impl = on; }
+    void cont() { m_condition.signal(); }
     void write_transitions_gv();
 
     bool get_cont_from_mainloop() const { return m_cont_from_mainloop; }
@@ -291,7 +281,7 @@ void MonteCarlo::multiplex_impl(state_type run_state)
     case MonteCarlo_alpha:
     case MonteCarlo_beta:
     {
-      int randomnumber = std::uniform_int_distribution<>{10, 69}(m_rand);
+      int randomnumber = std::uniform_int_distribution<>{10, 49}(m_rand);
       Dout(dc::notice, "randomnumber = " << randomnumber);
       bool state_changed = false;
       switch(randomnumber / 10)
@@ -311,29 +301,15 @@ void MonteCarlo::multiplex_impl(state_type run_state)
           set_state(MonteCarlo_beta);
           m_probe_flag = 0;
           break;
-        case 5:
-          state_changed = run_state < MonteCarlo_alpha;
-          m_probe_flag = advance_state_alpha_flag;
-          advance_state(MonteCarlo_alpha);
-          m_probe_flag = 0;
-          break;
-        case 6:
-          state_changed = run_state < MonteCarlo_beta;
-          m_probe_flag = advance_state_beta_flag;
-          advance_state(MonteCarlo_beta);
-          m_probe_flag = 0;
-          break;
       }
-      // We MUST call idle() or yield() if the state didn't change.
+      // We MUST call wait() or yield() if the state didn't change.
       if (!state_changed || randomnumber < 30)
       {
         if (randomnumber < 20)
         {
           m_probe_flag = idle_flag;
-          idle();
+          wait(m_condition);
           m_probe_flag = 0;
-          if (state_changed)
-            m_state_changed_and_idle_called = true;    // Tell montecarlo machinery that it is ok to insert a cont() in this case.
         }
         else
         {
@@ -342,16 +318,14 @@ void MonteCarlo::multiplex_impl(state_type run_state)
           m_probe_flag = 0;
         }
       }
-      // Call idle() or yield() anyway in 20% of the cases after a call to set_state or advance_state.
+      // Call idle() or yield() anyway in 20% of the cases after a call to set_state.
       else if (randomnumber % 10 < 2)
       {
         if (randomnumber % 10 == 0)
         {
           m_probe_flag = idle_flag;
-          idle();
+          wait(m_condition);
           m_probe_flag = 0;
-          if (state_changed)
-            m_state_changed_and_idle_called = true;    // Tell montecarlo machinery that it is ok to insert a cont() in this case.
         }
         else
         {
@@ -416,9 +390,9 @@ void MonteCarlo::probe_impl(char const* file, int file_line, bool record_state, 
   }
 
   // Only ever insert control function calls when we're not inside a critical area of mSubState.
-  // Also, do not insert a control function while we're inserting a cont().
+  // Also, do not insert a control function while we're inserting a signal().
   // And only insert control functions while running/multiplexing.
-  if (!m_sub_state_locked && m_probe_flag != inserted_cont_flag && state.base_state == bs_multiplex)
+  if (!m_sub_state_locked && m_probe_flag != inserted_signal_flag && state.base_state == bs_multiplex)
   {
 #ifdef CWDEBUG
     char const* file_name = strrchr(file, '/');
@@ -426,50 +400,19 @@ void MonteCarlo::probe_impl(char const* file, int file_line, bool record_state, 
 #endif
 
     int randomnumber = std::uniform_int_distribution<>{0, 30}(m_rand);
-    if (randomnumber < 10)      // Maybe insert a cont()?
+    if (randomnumber < 10)      // Maybe insert a signal()?
     {
-      // It should only ever happen (by design of the task) that cont() is called when the task is idle,
-      // and only exactly one cont() may be triggered in such cases. So, we should not insert a cont()
-      // here when we are already triggering anything else.
-      if (state.skip_idle == -1 && m_state_changed_and_idle_called && m_inside_probe_impl == 1)
+      // Insert a signal() once every 30 times.
+      if (randomnumber == 0)
       {
-        // Insert a cont() once every 30 times.
-        if (randomnumber == 0)
-        {
-          Dout(dc::statefultask, "Insertion of cont() at " << file_name << ':' << file_line);
-          debug::Mark __mark;
-          m_probe_flag = inserted_cont_flag;
-          cont();
-          m_probe_flag = 0;
-        }
-      }
-    }
-    else                        // Maybe insert an advance_state?
-    {
-      // Insert a advance_state() once every 15 times.
-      if (randomnumber == 10)
-      {
-        Dout(dc::statefultask, "Insertion of advance_state(MonteCarlo_alpha) at " << file_name << ':' << file_line);
+        Dout(dc::statefultask, "Insertion of signal() at " << file_name << ':' << file_line);
         debug::Mark __mark;
-        m_probe_flag = inserted_advance_state_alpha_flag;
-        advance_state(MonteCarlo_alpha);
-        m_probe_flag = 0;
-      }
-      else if (randomnumber == 20)
-      {
-        //done = true;
-        Dout(dc::statefultask, "Insertion of advance_state(MonteCarlo_beta) at " << file_name << ':' << file_line);
-        debug::Mark __mark;
-        m_probe_flag = inserted_advance_state_beta_flag;
-        advance_state(MonteCarlo_beta);
+        m_probe_flag = inserted_signal_flag;
+        m_condition.signal();
         m_probe_flag = 0;
       }
     }
   }
-
-  // If we get here and the state is not idle, then we can/should reset this because apparently we were continued again.
-  if (state.skip_idle != -1)
-    m_state_changed_and_idle_called = false;
 }
 
 void MonteCarlo::write_transitions_gv()
@@ -519,17 +462,13 @@ void MonteCarlo::write_transitions_gv()
     montecarlo::FullState const& fs(node->me->first);
     fs.print_s123(ofile);
     ofile << "\n";
-    fs.print_base_and_advance_state(ofile);
+    fs.print_base_state(ofile);
     ofile << "\n";
     fs.print_task_state(ofile);
     ofile << "\"";
 
     AIStatefulTask::task_state_st const& ts(fs.task_state);
-    if (ts.skip_idle == -1)
-      ofile << ",color=green";
-    else if (ts.skip_idle > 0)
-      ofile << ",color=lightblue";
-    else if (node_description.find("begin loop") != std::string::npos && fs.s1 == normal_run && ts.base_state == bs_multiplex)
+    if (node_description.find("begin loop") != std::string::npos && fs.s1 == normal_run && ts.base_state == bs_multiplex)
       ofile << ",color=red";
     if (ts.run_state == MonteCarlo_alpha)
       ofile << ",shape=box";
@@ -555,10 +494,6 @@ void MonteCarlo::write_transitions_gv()
         std::string label;
         if ((flags & abort_flag))
           label += "/abort()";
-        if ((flags & advance_state_alpha_flag))
-          label += "/advance_state(alpha)";
-        if ((flags & advance_state_beta_flag))
-          label += "/advance_state(beta)";
         if ((flags & cont_flag))
           label += "/cont()";
         if ((flags & finish_flag))
@@ -581,15 +516,9 @@ void MonteCarlo::write_transitions_gv()
           label += "/wait()";
         if ((flags & yield_flag))
           label += "/yield()";
-        if ((flags & inserted_cont_flag))
-          label += "/*cont()";
-        if ((flags & inserted_advance_state_alpha_flag))
-          label += "/*advance_state(alpha)";
-        if ((flags & inserted_advance_state_beta_flag))
-          label += "/*advance_state(beta)";
-        if ((flags & inserted_signalled_flag))
-          label += "/*signalled()";
-        bool only_inserted_flags = flags != 0 && (flags & ~(inserted_cont_flag|inserted_advance_state_alpha_flag|inserted_advance_state_beta_flag|inserted_signalled_flag)) == 0;
+        if ((flags & inserted_signal_flag))
+          label += "/*signal()";
+        bool only_inserted_flags = flags != 0 && (flags & ~inserted_signal_flag) == 0;
         ofile << " [";
         if (!label.empty())
         {
@@ -650,4 +579,10 @@ int main()
   AIAuxiliaryThread::stop();
 }
 
+#else
+#include <iostream>
+int main()
+{
+  std::cout << "Configure with --enable-montecarlo to let this do something." << std::endl;
+}
 #endif // CW_DEBUG_MONTECARLO
