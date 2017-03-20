@@ -10,6 +10,7 @@
 
 struct Task : public AIStatefulTask {
   private:
+    AICondition m_need_finish;
     bool m_do_finish;
 
   protected:
@@ -52,10 +53,10 @@ struct Task : public AIStatefulTask {
 
   public:
     // Cause task to finish.
-    void do_finish() { m_do_finish = true; gMainThreadEngine.mainloop(); }
+    void do_finish() { m_do_finish = true; m_need_finish.signal(); gMainThreadEngine.mainloop(); }
 };
 
-Task::Task() : AIStatefulTask(true), m_do_finish(false)
+Task::Task() : AIStatefulTask(true), m_need_finish(this), m_do_finish(false)
 {
 }
 
@@ -83,15 +84,14 @@ void Task::multiplex_impl(state_type run_state)
   switch(run_state)
   {
     case Task_start:
-      set_state(Task_done);
-      yield();
-      break;
-    case Task_done:
       if (!m_do_finish)
       {
-        yield();
+        wait(m_need_finish);
         break;
       }
+      set_state(Task_done);
+      /*fall-through*/
+    case Task_done:
       finish();
       break;
   }
@@ -271,7 +271,7 @@ void TestSuite::test1()
   DoutEntering(dc::notice, "TestSuite::test1()");
   ASSERT(running());            // We are running.
 
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start one task.
   gMainThreadEngine.mainloop();
 
@@ -291,7 +291,7 @@ void TestSuite::test2()
   DoutEntering(dc::notice, "TestSuite::test2()");
   ASSERT(running());            // We are running.
 
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start one task.
   gMainThreadEngine.mainloop();
 
@@ -308,7 +308,7 @@ void TestSuite::test2()
 void TestSuite::test3()
 {
   DoutEntering(dc::notice, "TestSuite::test3()");
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start two tasks.
   task2->run(this, &cv);
   gMainThreadEngine.mainloop();
@@ -332,7 +332,7 @@ void TestSuite::test3()
 void TestSuite::test4()
 {
   DoutEntering(dc::notice, "TestSuite::test4()");
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start two tasks.
   task2->run(this, &cv);
   gMainThreadEngine.mainloop();
@@ -350,7 +350,7 @@ void TestSuite::test4()
 void TestSuite::test5()
 {
   DoutEntering(dc::notice, "TestSuite::test5()");
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start two tasks.
   task2->run(this, &cv);
   gMainThreadEngine.mainloop();
@@ -369,7 +369,7 @@ void TestSuite::test5()
 void TestSuite::test6()
 {
   DoutEntering(dc::notice, "TestSuite::test6()");
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start two tasks.
   task2->run(this, &cv);
   gMainThreadEngine.mainloop();
@@ -388,7 +388,7 @@ void TestSuite::test6()
 void TestSuite::test7()
 {
   DoutEntering(dc::notice, "TestSuite::test7()");
-  AICondition cv(*this);
+  AICondition cv(this);
   task1->run(this, &cv);        // Start two tasks.
   task2->run(this, &cv);
   gMainThreadEngine.mainloop();
@@ -430,7 +430,7 @@ void TestSuite::test8()
         ++loops;
         int wait_calls = 0;
 
-        AICondition cv(*this);  // A condition variable.
+        AICondition cv(this);   // A condition variable.
         task1->run(this, &cv);  // Start three tasks that signal the cv when they finish.
         task2->run(this, &cv);
         task3->run(this, &cv);
