@@ -2,7 +2,6 @@
 #include "debug.h"
 #include "utils/MultiLoop.h"
 #include "statefultask/AIStatefulTask.h"
-#include "statefultask/AICondition.h"
 #include "statefultask/AIEngine.h"
 
 //===========================================================================
@@ -10,7 +9,6 @@
 
 struct Task : public AIStatefulTask {
   private:
-    AICondition m_need_finish;
     bool m_do_finish;
 
   protected:
@@ -53,10 +51,10 @@ struct Task : public AIStatefulTask {
 
   public:
     // Cause task to finish.
-    void do_finish() { m_do_finish = true; m_need_finish.signal(); gMainThreadEngine.mainloop(); }
+    void do_finish() { m_do_finish = true; signal(1); gMainThreadEngine.mainloop(); }
 };
 
-Task::Task() : AIStatefulTask(true), m_need_finish(this), m_do_finish(false)
+Task::Task() : AIStatefulTask(true), m_do_finish(false)
 {
 }
 
@@ -86,7 +84,7 @@ void Task::multiplex_impl(state_type run_state)
     case Task_start:
       if (!m_do_finish)
       {
-        wait(m_need_finish);
+        wait(1);
         break;
       }
       set_state(Task_done);
@@ -271,14 +269,13 @@ void TestSuite::test1()
   DoutEntering(dc::notice, "TestSuite::test1()");
   ASSERT(running());            // We are running.
 
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start one task.
+  task1->run(this, 2);          // Start one task.
   gMainThreadEngine.mainloop();
 
   ASSERT(!*task1);              // Task 1 is not finished (is still going to call the callback).
   ASSERT(!waiting());           // We are not idle.
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(waiting());            // We are idle.
 
   task1->do_finish();           // Task 1 finishes.
@@ -291,15 +288,14 @@ void TestSuite::test2()
   DoutEntering(dc::notice, "TestSuite::test2()");
   ASSERT(running());            // We are running.
 
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start one task.
+  task1->run(this, 2);          // Start one task.
   gMainThreadEngine.mainloop();
 
   task1->do_finish();           // Task 1 finishes.
   ASSERT(*task1);               // Task 1 is finished.
   ASSERT(running() && !waiting());      // We are running.
 
-  wait(cv);                     // Go idle.
+  wait(2);                       // Go idle.
   ASSERT(running() && !waiting());      // Still running.
 
   ASSERT(*task1);               // Task 1 is finished.
@@ -308,21 +304,20 @@ void TestSuite::test2()
 void TestSuite::test3()
 {
   DoutEntering(dc::notice, "TestSuite::test3()");
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start two tasks.
-  task2->run(this, &cv);
+  task1->run(this, 2);          // Start two tasks.
+  task2->run(this, 4);
   gMainThreadEngine.mainloop();
 
   ASSERT(running() && !waiting());
   ASSERT(!*task1 && !*task2);   // Neither task is finished.
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(waiting());
 
   task1->do_finish();           // Task 1 finishes.
   ASSERT(*task1 && !*task2);    // Task 1 is finished, task 2 isn't.
 
-  wait(cv);                     // Go idle.
+  wait(4);                      // Go idle.
   ASSERT(waiting());
 
   task2->do_finish();           // Task 2 finishes.
@@ -332,35 +327,33 @@ void TestSuite::test3()
 void TestSuite::test4()
 {
   DoutEntering(dc::notice, "TestSuite::test4()");
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start two tasks.
-  task2->run(this, &cv);
+  task1->run(this, 2);          // Start two tasks.
+  task2->run(this, 4);
   gMainThreadEngine.mainloop();
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(waiting());
 
   task1->do_finish();           // Task 1 finishes.
   task2->do_finish();           // Task 2 finishes.
 
-  wait(cv);                     // Go idle.
+  wait(4);                      // Go idle.
   ASSERT(running() && !waiting());
 }
 
 void TestSuite::test5()
 {
   DoutEntering(dc::notice, "TestSuite::test5()");
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start two tasks.
-  task2->run(this, &cv);
+  task1->run(this, 2);          // Start two tasks.
+  task2->run(this, 4);
   gMainThreadEngine.mainloop();
 
   task1->do_finish();           // Task 1 finishes.
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(running() && !waiting());
 
-  wait(cv);                     // Go idle.
+  wait(4);                      // Go idle.
   ASSERT(waiting());
 
   task2->do_finish();           // Task 2 finishes.
@@ -369,39 +362,40 @@ void TestSuite::test5()
 void TestSuite::test6()
 {
   DoutEntering(dc::notice, "TestSuite::test6()");
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start two tasks.
-  task2->run(this, &cv);
+  task1->run(this, 2);          // Start two tasks.
+  task2->run(this, 4);
   gMainThreadEngine.mainloop();
 
   task1->do_finish();           // Task 1 finishes.
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(running() && !waiting());
 
   task2->do_finish();           // Task 2 finishes.
 
-  wait(cv);                     // Go idle.
+  wait(4);                      // Go idle.
   ASSERT(running() && !waiting());
 }
 
 void TestSuite::test7()
 {
   DoutEntering(dc::notice, "TestSuite::test7()");
-  AICondition cv(this);
-  task1->run(this, &cv);        // Start two tasks.
-  task2->run(this, &cv);
+  task1->run(this, 2);          // Start two tasks.
+  task2->run(this, 4);
   gMainThreadEngine.mainloop();
 
   task1->do_finish();           // Task 1 finishes.
   task2->do_finish();           // Task 2 finishes.
 
-  wait(cv);                     // Go idle.
+  wait(2);                      // Go idle.
   ASSERT(running() && !waiting());
 
   ASSERT(*task1 && *task2);     // Both tasks finished.
 
-  wait(cv);                     // Go idle.
+  wait(4);                      // Go idle.
+  ASSERT(running() && !waiting());
+
+  wait(2);
   ASSERT(waiting());            // Calling wait() twice on a row always causes us to go idle!
 }
 
@@ -430,11 +424,17 @@ void TestSuite::test8()
         ++loops;
         int wait_calls = 0;
 
-        AICondition cv(this);   // A condition variable.
-        task1->run(this, &cv);  // Start three tasks that signal the cv when they finish.
-        task2->run(this, &cv);
-        task3->run(this, &cv);
-        task4->run(this, &cv);
+        // Reset main task.
+        signal(-1);
+        signal(-1);
+        wait(-1);
+        // Main task is running and not idle().
+        ASSERT(running() && !waiting());
+
+        task1->run(this, 2);  // Start three tasks that signal 2 when they finish.
+        task2->run(this, 2);
+        task3->run(this, 2);
+        task4->run(this, 2);
         gMainThreadEngine.mainloop();
 
         int n = 0;
@@ -457,7 +457,7 @@ void TestSuite::test8()
           if ((task1t1 && task2t1 && task3t1) || (task2t2 && task3t2 && task4t2))       // We need either task1, 2 and 3 to have finished, or 2, 3 and 4.
             break;
           finished += ml.insert(n++);
-          wait(cv);             // Go idle until one or more tasks are finished.
+          wait(2);             // Go idle until one or more tasks are finished.
           ++wait_calls;
           if ((*task1 && *task2 && *task3) || (*task2 && *task3 && *task4))
             break;
@@ -483,7 +483,7 @@ void TestSuite::test8()
           done += *task4 ? 1 : 0;
           while (running() && !waiting())
           {
-            wait(cv);
+            wait(2);
             ++wait_calls;
           }
           if (done == 4)
