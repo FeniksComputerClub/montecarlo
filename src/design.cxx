@@ -411,10 +411,17 @@ void TestSuite::test8()
   ml.add(&task2);
   ml.add(&task3);
   ml.add(&task4);
+  ASSERT(running() && !waiting());
+  wait(2);
+  ASSERT(waiting());
   for (; !ml.finished(); ml.next_loop())
     for (; ml() < 25; ++ml)
       if (ml.inner_loop())
       {
+        // Continue running.
+        signal(2);
+        ASSERT(!waiting());
+
         // Reset the tasks.
         task1 = new Task;
         task2 = new Task;
@@ -424,10 +431,6 @@ void TestSuite::test8()
         ++loops;
         int wait_calls = 0;
 
-        // Reset main task.
-        signal(-1);
-        signal(-1);
-        wait(-1);
         // Main task is running and not idle().
         ASSERT(running() && !waiting());
 
@@ -459,10 +462,7 @@ void TestSuite::test8()
           finished += ml.insert(n++);
           wait(2);             // Go idle until one or more tasks are finished.
           ++wait_calls;
-          if ((*task1 && *task2 && *task3) || (*task2 && *task3 && *task4))
-            break;
-          ASSERT(wait_calls <= finished + 1);
-          ASSERT((running() && !waiting()) || finished < 4);
+          ASSERT((running() && !waiting()) || finished < 3 || (finished == 3 && *task1 && *task4));
           if (waiting() && ml.number_of_insertions_at(n) == 0)
           {
             nonsense = true;
@@ -493,6 +493,7 @@ void TestSuite::test8()
         }
         ASSERT(finished == 4);
         ASSERT(wait_calls <= 5);
+        ASSERT(waiting());
       }
   Dout(dc::notice, "count = " << count << "; loops = " << loops);
 }
