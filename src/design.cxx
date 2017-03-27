@@ -34,6 +34,9 @@ struct Task : public AIStatefulTask {
   protected:
     // The following virtual functions must be implemented:
 
+    // Return human readable string for run_state.
+    /*virtual*/ char const* state_str_impl(state_type run_state) const;
+
     // Handle initializing the object.
     /*virtual*/ void initialize_impl();
 
@@ -45,9 +48,6 @@ struct Task : public AIStatefulTask {
 
     // Handle cleaning up from initialization (or post abort) state (the default AIStatefulTask::finish_impl() does nothing).
     /*virtual*/ void finish_impl() { }
-
-    // Return human readable string for run_state.
-    /*virtual*/ char const* state_str_impl(state_type run_state) const;
 
   public:
     // Cause task to finish.
@@ -180,9 +180,9 @@ struct TestSuite final : public Task {
   protected:
     /*virtual*/ ~TestSuite() { task1.reset(); task2.reset(); task3.reset(); task4.reset(); }
 
+    /*virtual*/ char const* state_str_impl(state_type run_state) const;
     /*virtual*/ void initialize_impl();
     /*virtual*/ void multiplex_impl(state_type run_state);
-    /*virtual*/ char const* state_str_impl(state_type run_state) const;
 };
 
 char const* TestSuite::state_str_impl(state_type run_state) const
