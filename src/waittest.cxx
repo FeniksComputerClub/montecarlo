@@ -12,7 +12,7 @@ class WaitTest : public AIStatefulTask {
 
   protected:
     // The base class of this task.
-    typedef AIStatefulTask direct_base_type;
+    using direct_base_type = AIStatefulTask;
 
     // The different states of the task.
     enum wait_test_state_type {
@@ -75,7 +75,7 @@ class Bumper : public AIStatefulTask {
 
   protected:
     // The base class of this task.
-    typedef AIStatefulTask direct_base_type;
+    using direct_base_type = AIStatefulTask;
 
     // The different states of the task.
     enum wait_test_state_type {

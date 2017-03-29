@@ -13,7 +13,7 @@ struct Task : public AIStatefulTask {
 
   protected:
     // The base class of this task.
-    typedef AIStatefulTask direct_base_type;
+    using direct_base_type = AIStatefulTask;
 
     // The different states of the task.
     enum design_state_type {
@@ -138,7 +138,7 @@ int Inserter::number_of_insertions_at(int m)
 struct TestSuite final : public Task {
   protected:
     // The base class of this task.
-    typedef Task direct_base_type;
+    using direct_base_type = Task;
 
     // The different states of the task.
     enum design_state_type {
